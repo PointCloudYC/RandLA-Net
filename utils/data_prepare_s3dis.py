@@ -11,10 +11,14 @@ sys.path.append(ROOT_DIR)
 from helper_ply import write_ply
 from helper_tool import DataProcessing as DP
 
-dataset_path = '/data/S3DIS/Stanford3dDataset_v1.2_Aligned_Version'
+# dataset_path = '/data/S3DIS/Stanford3dDataset_v1.2_Aligned_Version'
+dataset_path = './data/S3DIS/Stanford3dDataset_v1.2_Aligned_Version'
+
+# obtain room paths for training areas -yc
 anno_paths = [line.rstrip() for line in open(join(BASE_DIR, 'meta/anno_paths.txt'))]
 anno_paths = [join(dataset_path, p) for p in anno_paths]
 
+# object categories for the S3DIS dataset
 gt_class = [x.rstrip() for x in open(join(BASE_DIR, 'meta/class_names.txt'))]
 gt_class2label = {cls: i for i, cls in enumerate(gt_class)}
 
@@ -32,8 +36,11 @@ def convert_pc2ply(anno_path, save_path):
     We aggregated all the points from each instance in the room.
     :param anno_path: path to annotations. e.g. Area_1/office_2/Annotations/
     :param save_path: path to save original point clouds (each line is XYZRGBL)
-    :return: None
+    :return: None;
+    note: Physically, each room will generate four files, including raw_pc.ply, sub_pc.ply, sub_pc.pkl for the kdtree and proj_idx.pkl for each raw point's nearest neighbor in the sub_pc )
     """
+
+    # store points and labels for the room(correspond to the anno_path), yc
     data_list = []
 
     for f in glob.glob(join(anno_path, '*.txt')):
@@ -44,10 +51,12 @@ def convert_pc2ply(anno_path, save_path):
         labels = np.ones((pc.shape[0], 1)) * gt_class2label[class_name]
         data_list.append(np.concatenate([pc, labels], 1))  # Nx7
 
-    pc_label = np.concatenate(data_list, 0)
+    # translate the data by xyz_min--yc
+    pc_label = np.concatenate(data_list, 0) # Nx7 as a np object
     xyz_min = np.amin(pc_label, axis=0)[0:3]
     pc_label[:, 0:3] -= xyz_min
 
+    # manage data types and save in PLY format--yc
     xyz = pc_label[:, :3].astype(np.float32)
     colors = pc_label[:, 3:6].astype(np.uint8)
     labels = pc_label[:, 6].astype(np.uint8)
@@ -64,6 +73,8 @@ def convert_pc2ply(anno_path, save_path):
     with open(kd_tree_file, 'wb') as f:
         pickle.dump(search_tree, f)
 
+    # nearest nb index list for xyz when searching using the sub-sampled PC generated kdtree--yc
+    # https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.KDTree.html
     proj_idx = np.squeeze(search_tree.query(xyz, return_distance=False))
     proj_idx = proj_idx.astype(np.int32)
     proj_save = join(sub_pc_folder, str(save_path.split('/')[-1][:-4]) + '_proj.pkl')
@@ -74,7 +85,10 @@ def convert_pc2ply(anno_path, save_path):
 if __name__ == '__main__':
     # Note: there is an extra character in the v1.2 data in Area_5/hallway_6. It's fixed manually.
     for annotation_path in anno_paths:
-        print(annotation_path)
+
+        # e.g.: data/S3DIS/Stanford3dDataset_v1.2_Aligned_Version/Area_1/conferenceRoom_1/Annotations
+        print(annotation_path) 
         elements = str(annotation_path).split('/')
+        # e.g.: Area_1_conferenceRoom_1.ply
         out_file_name = elements[-3] + '_' + elements[-2] + out_format
         convert_pc2ply(annotation_path, join(original_pc_folder, out_file_name))
