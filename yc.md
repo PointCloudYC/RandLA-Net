@@ -72,10 +72,10 @@ python utils/6_fold_cv.py
   --data_prepare_{mepnet,s3dis,semantic3d,semantickitti}.py, prepare training files for the raw dataset.
   --6_fold_cv.py, synthesize metrics(accuracy, mIoU) from result folder for S3DIS dataset
 
---helper_ply.py
+--helper_ply.py, ply relevant functions, e.g., write, read.
+--helper_tf_util.py, tf utility functions
+--helper_tool.py, dataset config, plotting and etc.
 --helper_requirements.txt
---helper_tf_util.py
---helper_tool.py
 
 --**RandLANet.py**, the RandLA-Net model; provides key methods for the model, including __init__, inference, dilated_res_block, random_sample, building_block, relative_pos_encoding, att_pooling, nearest_interpolation, conv2d_transpose methods.
 
@@ -90,8 +90,25 @@ python utils/6_fold_cv.py
 --test, log for testing set
 ```
 
-# exploitation
+## problems
+### can not find nearest_neighbors.lib.python.nearest_neighbors module for helper_tool.py
 
+- problem: when run the main file(main_S3DIS.py), report cannot find nearest_neighbors.lib.python.nearest_neighbors module for helper_tool.py
+
+- reason: when executing the `sh compile_op.sh`, the `python setup.py install --home="."` does not execute correctly, which reports ModuleNotFoundError: No module named 'Cython'.
+- solution: make sure your current conda env install the Cython module correctly
+
+```
+# /usr/bin/python3 -m pip install --upgrade pip
+pip3 install --upgrade cython
+```
+
+### OOM (out-of-memory) problem
+
+- problem: when run the training program, reports the OOM issue
+- solution: reduce your training batch size from 6 to a smaller number, e.g., 2; Or you can training on a GPU w. larger memory.
+
+# exploitation
 
 ## Ideas implementation
 ### encoding 
