@@ -6,3 +6,16 @@ data/*
 
 # vscode
 .vscode/settings.json
+
+# outputs of compiled ops
+utils/*/build/*
+utils/cpp_wrappers/cpp_subsampling/build/*
+utils/cpp_wrappers/cpp_subsampling/*.so
+utils/nearest_neighbors/lib/python/*
+utils/nearest_neighbors/knn.cpp
+__pycache__/*
+*/__pycache__/*
+
+# logs
+train_log/*
+log_*.txt

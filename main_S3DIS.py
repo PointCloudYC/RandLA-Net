@@ -2,6 +2,7 @@ from os.path import join
 from RandLANet import Network
 from tester_S3DIS import ModelTester
 from helper_ply import read_ply
+# S3DIS's configs
 from helper_tool import ConfigS3DIS as cfg
 from helper_tool import DataProcessing as DP
 from helper_tool import Plot
@@ -11,9 +12,18 @@ import time, pickle, argparse, glob, os
 
 
 class S3DIS:
+    """S3DIS dataset class w/o inheriting any TensorFlow built-in classes
+    Despite not inheriting any TensorFlow built-in classes, this class follow the tensorflow's dataset pattern: input pipeline w. iterator and initilizer
+    - __int__(): initialize the dataset basic settings, e.g., dataset path, test_area_idx=5, classes, categories, and physical file paths, etc.Then it will call load_sub_sampled_clouds().
+    - load_sub_sampled_clouds(): load S3DIS dataset physical sub-sampled files as training and test clouds; (note: these sub-sub-sampled files are prepared by the data_prepare_s3dis.py)
+    - init_input_pipeline(): create tensorflow built-in dataset object using the `from_generator` method, then create its iterator and train,val_init_op operator for session running.
+    - get_batch_gen(): use for the above init_input_pipeline() to obtain batch data
+    - get_tf_mapping2(): use for the above init_input_pipeline() to organize each stage's points,neighbors,pools and up_samples into a list.
+    """
     def __init__(self, test_area_idx):
         self.name = 'S3DIS'
-        self.path = '/data/S3DIS'
+        # self.path = '/data/S3DIS'
+        self.path = 'data/S3DIS'
         self.label_to_names = {0: 'ceiling',
                                1: 'floor',
                                2: 'wall',
@@ -33,20 +43,30 @@ class S3DIS:
         self.ignored_labels = np.array([])
 
         self.val_split = 'Area_' + str(test_area_idx)
-        self.all_files = glob.glob(join(self.path, 'original_ply', '*.ply'))
+        self.all_files = glob.glob(join(self.path, 'original_ply', '*.ply')) # scan the folder for all ply files
 
         # Initiate containers
+        # validation projection indice list, each item represents projection nnest id over a sub_pc for each corresponding raw pc pt-yc
         self.val_proj = []
+        # validation labels list, each item represent a validation sub_pc's label-yc
         self.val_labels = []
+        # possibility for control to randomly choose a point in the sub_pc evenly-yc
         self.possibility = {}
         self.min_possibility = {}
+        # {training,validation} sub_pc's kd_trees, colors, labels and names-yc
         self.input_trees = {'training': [], 'validation': []}
         self.input_colors = {'training': [], 'validation': []}
         self.input_labels = {'training': [], 'validation': []}
         self.input_names = {'training': [], 'validation': []}
+        # fill the above containers by reading physical sub_pc files-yc
         self.load_sub_sampled_clouds(cfg.sub_grid_size)
 
     def load_sub_sampled_clouds(self, sub_grid_size):
+        """load sub_sampled physical files and fill all the containers, input_{trees, colors, labels, names} and val_{proj,labels}-yc
+
+        Args:
+            sub_grid_size ([type]): sub-sampling grid size, e.g., 0.040
+        """
         tree_path = join(self.path, 'input_{:.3f}'.format(sub_grid_size))
         for i, file_path in enumerate(self.all_files):
             t0 = time.time()
@@ -57,17 +77,18 @@ class S3DIS:
                 cloud_split = 'training'
 
             # Name of the input files
-            kd_tree_file = join(tree_path, '{:s}_KDTree.pkl'.format(cloud_name))
-            sub_ply_file = join(tree_path, '{:s}.ply'.format(cloud_name))
+            kd_tree_file = join(tree_path, '{:s}_KDTree.pkl'.format(cloud_name)) # e.g., Area_1_conferenceRoom_1_KDTree.pkl
+            sub_ply_file = join(tree_path, '{:s}.ply'.format(cloud_name)) # e.g., Area_1_conferenceRoom_1.ply
 
-            data = read_ply(sub_ply_file)
-            sub_colors = np.vstack((data['red'], data['green'], data['blue'])).T
+            data = read_ply(sub_ply_file) # ply format: x,y,z,red,gree,blue,class
+            sub_colors = np.vstack((data['red'], data['green'], data['blue'])).T # (N',3), note the transpose symbol
             sub_labels = data['class']
 
             # Read pkl with search tree
             with open(kd_tree_file, 'rb') as f:
                 search_tree = pickle.load(f)
 
+            # input_xx is a dict contain training or validation info for all sub_pc, each of them contain a list
             self.input_trees[cloud_split] += [search_tree]
             self.input_colors[cloud_split] += [sub_colors]
             self.input_labels[cloud_split] += [sub_labels]
@@ -78,7 +99,7 @@ class S3DIS:
 
         print('\nPreparing reprojected indices for testing')
 
-        # Get validation and test reprojected indices
+        # Get validation and test reprojected indices and labels (this is useful for validating on all raw points)
         for i, file_path in enumerate(self.all_files):
             t0 = time.time()
             cloud_name = file_path.split('/')[-1][:-4]
@@ -93,12 +114,13 @@ class S3DIS:
                 print('{:s} done in {:.1f}s'.format(cloud_name, time.time() - t0))
 
     # Generate the input data flow
+    # Intuitively, it prepare data training examples, each pc will generate numerous point cloud training/validation examples by selecting a center point in the pc evenly, then select center point's neighboring points within a radius but not more than a threshold (e.g.,10000)-yc
     def get_batch_gen(self, split):
         if split == 'training':
             num_per_epoch = cfg.train_steps * cfg.batch_size
         elif split == 'validation':
             num_per_epoch = cfg.val_steps * cfg.val_batch_size
-
+        # assign a possibility for all sub_pc and their containing points-yc
         self.possibility[split] = []
         self.min_possibility[split] = []
         # Random initialize
@@ -167,7 +189,12 @@ class S3DIS:
 
     @staticmethod
     def get_tf_mapping2():
-        # Collect flat inputs
+        """mapping for tranlating dataset's tensor to another form-yc
+        The params of tf_map() just corresponds to {xyz,features,labels,idx,cloud_idx};
+        Considering there are cfg.num_layers(e.g., 4) stages in the encoder, each stage will have a sub-sampling process, use a list (named flat_inputs) for managing all of them (i.e., sub_sampled point cloud info at these stages). For example, if we have 4 sub-sampling processes, the flat_inputs list will have 20 items, like: [input_points, input_neighbors, input_pools, input_up_samples, batch_features, batch_labels, batch_pc_idx(i.e. points idx in the cloud),batch_cloud_idx], so 4*(cfg.num_layers+1) items in total
+        Returns:
+            [type]: [description]
+        """
         def tf_map(batch_xyz, batch_features, batch_labels, batch_pc_idx, batch_cloud_idx):
             batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
             input_points = []
@@ -176,10 +203,10 @@ class S3DIS:
             input_up_samples = []
 
             for i in range(cfg.num_layers):
-                neighbour_idx = tf.py_func(DP.knn_search, [batch_xyz, batch_xyz, cfg.k_n], tf.int32)
-                sub_points = batch_xyz[:, :tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :]
-                pool_i = neighbour_idx[:, :tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :]
-                up_i = tf.py_func(DP.knn_search, [sub_points, batch_xyz, 1], tf.int32)
+                neighbour_idx = tf.py_func(DP.knn_search, [batch_xyz, batch_xyz, cfg.k_n], tf.int32) # (B,N,k)
+                sub_points = batch_xyz[:, :tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :] # retrieve first N/sub_sampling_ratio pts
+                pool_i = neighbour_idx[:, :tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :] # sub_sampled points' id
+                up_i = tf.py_func(DP.knn_search, [sub_points, batch_xyz, 1], tf.int32) # (B,N,K) over the sub_points
                 input_points.append(batch_xyz)
                 input_neighbors.append(neighbour_idx)
                 input_pools.append(pool_i)
@@ -189,30 +216,34 @@ class S3DIS:
             input_list = input_points + input_neighbors + input_pools + input_up_samples
             input_list += [batch_features, batch_labels, batch_pc_idx, batch_cloud_idx]
 
-            return input_list
+            return input_list # contains: [input_points, input_neighbors, input_pools, input_up_samples, batch_features, batch_labels, batch_pc_idx(i.e. points idx in the cloud),batch_cloud_idx], so 4*(cfg.num_layers+1) items in total
 
         return tf_map
 
     def init_input_pipeline(self):
+        """
+        obtain X,Y pair and {train,val}_init_op operator following tensorflow pipline pattern.
+        """
         print('Initiating input pipelines')
         cfg.ignored_label_inds = [self.label_to_idx[ign_label] for ign_label in self.ignored_labels]
         gen_function, gen_types, gen_shapes = self.get_batch_gen('training')
         gen_function_val, _, _ = self.get_batch_gen('validation')
-        self.train_data = tf.data.Dataset.from_generator(gen_function, gen_types, gen_shapes)
+        self.train_data = tf.data.Dataset.from_generator(gen_function, gen_types, gen_shapes) # create the dataset from a generator
         self.val_data = tf.data.Dataset.from_generator(gen_function_val, gen_types, gen_shapes)
 
-        self.batch_train_data = self.train_data.batch(cfg.batch_size)
+        self.batch_train_data = self.train_data.batch(cfg.batch_size) # batch the dataset object
         self.batch_val_data = self.val_data.batch(cfg.val_batch_size)
         map_func = self.get_tf_mapping2()
 
-        self.batch_train_data = self.batch_train_data.map(map_func=map_func)
+        self.batch_train_data = self.batch_train_data.map(map_func=map_func) # map to another form, each batch is a list containing 4*(num_layers+1) items corresponding to points, features, labels, cloud_idx, point_idx at different sub-sampled stages for each batch
         self.batch_val_data = self.batch_val_data.map(map_func=map_func)
 
         self.batch_train_data = self.batch_train_data.prefetch(cfg.batch_size)
         self.batch_val_data = self.batch_val_data.prefetch(cfg.val_batch_size)
 
         iter = tf.data.Iterator.from_structure(self.batch_train_data.output_types, self.batch_train_data.output_shapes)
-        self.flat_inputs = iter.get_next()
+        self.flat_inputs = iter.get_next() # iterator, each returns a flat_inputs list containing 20 items
+        # prepare operator for session to run
         self.train_init_op = iter.make_initializer(self.batch_train_data)
         self.val_init_op = iter.make_initializer(self.batch_val_data)
 
@@ -231,11 +262,19 @@ if __name__ == '__main__':
     Mode = FLAGS.mode
 
     test_area = FLAGS.test_area
+
+    # create S3DIS dataset object using test_area as validation/test set, the rest as training set-yc
     dataset = S3DIS(test_area)
     dataset.init_input_pipeline()
 
+    """provide 3 functionality: training, testing and visualization-yc
+    - training; pass the dataset object and dataset config to create the Network object, then start training
+    - testing; pass in the model checkpoint and create ModelTest object, then start testing
+    - visualization; plot the raw pc and sub_pc
+    """
     if Mode == 'train':
-        model = Network(dataset, cfg)
+        # NOTE: cfg is S3DIS object w. common configs, a global variable here.
+        model = Network(dataset, cfg) 
         model.train(dataset)
     elif Mode == 'test':
         cfg.saving = False

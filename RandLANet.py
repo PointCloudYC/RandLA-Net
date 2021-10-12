@@ -15,6 +15,19 @@ def log_out(out_str, f_out):
 
 
 class Network:
+    """RandLA-Net class w/o inheriting any TensorFlow built-in classes, but the logic herein is similar-yc
+    - __init__(): set the config, flat_inputs(all those batched data), inputs, logits, loss, optimizer, results and log using TF summarywriter.
+    - inference(): implement the network logic with encoder-decoder structure, need the follow function as core components:
+        - dilated_res_block(): the dilated residual block
+        - building_block(): build 1 simple block 
+        - relative_pos_encoding(): relative position encoding for the LocSE
+        - random_sample(): RS
+        - nearest_interpolation(): nearest interpolation with inverse weighted distance
+        - gather neighbour(): gather nearest neighbours
+        -att_pooling(): attentive pooling
+    - train(): training with an optimizer by running session for ops (following tensorflow 1.x pattern)
+    - evaluate(): evaluate on the val/test set.
+    """
     def __init__(self, dataset, config):
         flat_inputs = dataset.flat_inputs
         self.config = config
@@ -25,18 +38,18 @@ class Network:
             else:
                 self.saving_path = self.config.saving_path
             makedirs(self.saving_path) if not exists(self.saving_path) else None
-
+        # use inputs(a dict) variable to map the flat_inputs
         with tf.variable_scope('inputs'):
             self.inputs = dict()
             num_layers = self.config.num_layers
-            self.inputs['xyz'] = flat_inputs[:num_layers]
-            self.inputs['neigh_idx'] = flat_inputs[num_layers: 2 * num_layers]
-            self.inputs['sub_idx'] = flat_inputs[2 * num_layers:3 * num_layers]
-            self.inputs['interp_idx'] = flat_inputs[3 * num_layers:4 * num_layers]
-            self.inputs['features'] = flat_inputs[4 * num_layers]
+            self.inputs['xyz'] = flat_inputs[:num_layers] # xyz(points) of sub_pc at all the sub_sampling stages, containing num_layers items
+            self.inputs['neigh_idx'] = flat_inputs[num_layers: 2 * num_layers] # neighbour id, containing num_layers items
+            self.inputs['sub_idx'] = flat_inputs[2 * num_layers:3 * num_layers] # sub_sampled idx, containing num_layers items
+            self.inputs['interp_idx'] = flat_inputs[3 * num_layers:4 * num_layers] # interpolation idx (nearest idx in the sub_pc for all raw pts), containing num_layers items
+            self.inputs['features'] = flat_inputs[4 * num_layers] # features containing xyz and feature, (B,N,3+C)
             self.inputs['labels'] = flat_inputs[4 * num_layers + 1]
-            self.inputs['input_inds'] = flat_inputs[4 * num_layers + 2]
-            self.inputs['cloud_inds'] = flat_inputs[4 * num_layers + 3]
+            self.inputs['input_inds'] = flat_inputs[4 * num_layers + 2] # input_inds for each batch 's point in the sub_pc
+            self.inputs['cloud_inds'] = flat_inputs[4 * num_layers + 3] # cloud_inds for each batch
 
             self.labels = self.inputs['labels']
             self.is_training = tf.placeholder(tf.bool, shape=())
@@ -101,25 +114,36 @@ class Network:
         self.sess.run(tf.global_variables_initializer())
 
     def inference(self, inputs, is_training):
+        """similar to pytorch's forward() function where the RandLA-Net architecture is implemented by an encoder-decoder structure-yc
+        In the encoder, LocSE block and RandomSampling is used where LocSE consists of gather_neighbors, relative_pos_encoding, att_pooling()
+        In the decoder, nearest interpolation is used w. short-cut connections
+
+        Args:
+            inputs ([type]): a dict containing all kinds of required inputs
+            is_training (bool): training or not
+
+        Returns:
+            tensor: logits for segmentation scores
+        """
 
         d_out = self.config.d_out
-        feature = inputs['features']
-        feature = tf.layers.dense(feature, 8, activation=None, name='fc0')
+        feature = inputs['features'] # (B,N,6)
+        feature = tf.layers.dense(feature, 8, activation=None, name='fc0') # (B,N,8)
         feature = tf.nn.leaky_relu(tf.layers.batch_normalization(feature, -1, 0.99, 1e-6, training=is_training))
-        feature = tf.expand_dims(feature, axis=2)
+        feature = tf.expand_dims(feature, axis=2) # expand 1 more dim to use Conv2D ops, (B,N,1,8)
 
         # ###########################Encoder############################
-        f_encoder_list = []
+        f_encoder_list = [] # in the end, collect num_layers + 1 items for a group of hierarchical point feature embeddings
         for i in range(self.config.num_layers):
             f_encoder_i = self.dilated_res_block(feature, inputs['xyz'][i], inputs['neigh_idx'][i], d_out[i],
-                                                 'Encoder_layer_' + str(i), is_training)
-            f_sampled_i = self.random_sample(f_encoder_i, inputs['sub_idx'][i])
+                                                 'Encoder_layer_' + str(i), is_training) # similar to LAO for local feature learning
+            f_sampled_i = self.random_sample(f_encoder_i, inputs['sub_idx'][i]) # down-sampled the input using the idx
             feature = f_sampled_i
             if i == 0:
                 f_encoder_list.append(f_encoder_i)
-            f_encoder_list.append(f_sampled_i)
+            f_encoder_list.append(f_sampled_i) # (B,N,1,32), (B,N/4,1,32), (B,N/16,1,128), (B,N/64,1,256), (B,N/256,1,512), (B,N/512,1,1024)
         # ###########################Encoder############################
-
+        # transition using a MLP/pointwise Conv2D, e.g., (N/512,1024)-> (N/512,1024)
         feature = helper_tf_util.conv2d(f_encoder_list[-1], f_encoder_list[-1].get_shape()[3].value, [1, 1],
                                         'decoder_0',
                                         [1, 1], 'VALID', True, is_training)
@@ -127,21 +151,21 @@ class Network:
         # ###########################Decoder############################
         f_decoder_list = []
         for j in range(self.config.num_layers):
-            f_interp_i = self.nearest_interpolation(feature, inputs['interp_idx'][-j - 1])
+            f_interp_i = self.nearest_interpolation(feature, inputs['interp_idx'][-j - 1]) # interpolate w. the idx, (B,N/512,1024)-> (B,N/256,1,1024)
             f_decoder_i = helper_tf_util.conv2d_transpose(tf.concat([f_encoder_list[-j - 2], f_interp_i], axis=3),
                                                           f_encoder_list[-j - 2].get_shape()[-1].value, [1, 1],
                                                           'Decoder_layer_' + str(j), [1, 1], 'VALID', bn=True,
-                                                          is_training=is_training)
+                                                          is_training=is_training) # shortcut connection
             feature = f_decoder_i
-            f_decoder_list.append(f_decoder_i)
+            f_decoder_list.append(f_decoder_i) # upsampled point embeddings-yc
         # ###########################Decoder############################
-
+        # obtain classification scores using FCs (8->64,32(w. dropouts),num_classes)
         f_layer_fc1 = helper_tf_util.conv2d(f_decoder_list[-1], 64, [1, 1], 'fc1', [1, 1], 'VALID', True, is_training)
         f_layer_fc2 = helper_tf_util.conv2d(f_layer_fc1, 32, [1, 1], 'fc2', [1, 1], 'VALID', True, is_training)
         f_layer_drop = helper_tf_util.dropout(f_layer_fc2, keep_prob=0.5, is_training=is_training, scope='dp1')
         f_layer_fc3 = helper_tf_util.conv2d(f_layer_drop, self.config.num_classes, [1, 1], 'fc', [1, 1], 'VALID', False,
-                                            is_training, activation_fn=None)
-        f_out = tf.squeeze(f_layer_fc3, [2])
+                                            is_training, activation_fn=None) # (B,N,1,num_classes)
+        f_out = tf.squeeze(f_layer_fc3, [2]) # (B,N,num_classes)
         return f_out
 
     def train(self, dataset):
@@ -258,6 +282,16 @@ class Network:
         return mean_iou
 
     def get_loss(self, logits, labels, pre_cal_weights):
+        """weighted CE loss
+
+        Args:
+            logits ([type]): logits, shape like: (B,N,K)
+            labels ([type]): labels, shape like: (B,N) where each value is in [0,1,...,K-1]
+            pre_cal_weights ([type]): class weight, a list
+
+        Returns:
+            [type]: the loss
+        """
         # calculate the weighted cross entropy according to the inverse frequency
         class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
         one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)

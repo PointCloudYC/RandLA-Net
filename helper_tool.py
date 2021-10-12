@@ -11,8 +11,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, 'utils'))
 
-import cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
-import nearest_neighbors.lib.python.nearest_neighbors as nearest_neighbors
+import utils.cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
+import utils.nearest_neighbors.lib.python.nearest_neighbors as nearest_neighbors
 
 
 class ConfigSemanticKITTI:
@@ -48,7 +48,7 @@ class ConfigS3DIS:
     num_classes = 13  # Number of valid classes
     sub_grid_size = 0.04  # preprocess_parameter
 
-    batch_size = 6  # batch_size during training
+    batch_size = 2  # batch_size during training
     val_batch_size = 20  # batch_size during validation and test
     train_steps = 500  # Number of steps per epochs
     val_steps = 100  # Number of validation steps per epoch
@@ -168,6 +168,18 @@ class DataProcessing:
 
     @staticmethod
     def data_aug(xyz, color, labels, idx, num_out):
+        """add padded points-yc
+
+        Args:
+            xyz ([type]): [description]
+            color ([type]): [description]
+            labels ([type]): [description]
+            idx ([type]): [description]
+            num_out ([type]): [description]
+
+        Returns:
+            [type]: [description]
+        """
         num_in = len(xyz)
         dup = np.random.choice(num_in, num_out - num_in)
         xyz_dup = xyz[dup, ...]
