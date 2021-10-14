@@ -65,6 +65,9 @@ class ConfigS3DIS:
     saving = True
     saving_path = None
 
+    # weakly semantic segmentation
+    weak_label_ratio = 0.01 # 0.1, etc
+
 
 class ConfigSemantic3D:
     k_n = 16  # KNN
