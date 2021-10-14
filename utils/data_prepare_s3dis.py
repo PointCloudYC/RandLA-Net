@@ -82,6 +82,11 @@ def convert_pc2ply(anno_path, save_path):
         pickle.dump([proj_idx, labels], f)
 
 
+"""
+Prepare the S3DIS dataset for training by generating new info from each room's point cloud(PC)
+- input: each room's PC
+- output: 1) raw_pc in ply, 2)sub_pc in ply, 3) KDTree for the sub_pc, and 4)projection indices for each raw point over the sub_pc(used for DL validation/inference as the learning process only occur on the sub_pc, therefore by relating raw point's relations to the sub_pc can help propagate their semantics.)
+"""
 if __name__ == '__main__':
     # Note: there is an extra character in the v1.2 data in Area_5/hallway_6. It's fixed manually.
     for annotation_path in anno_paths:
@@ -91,4 +96,6 @@ if __name__ == '__main__':
         elements = str(annotation_path).split('/')
         # e.g.: Area_1_conferenceRoom_1.ply
         out_file_name = elements[-3] + '_' + elements[-2] + out_format
+
+        # convert each room's pc to ply and more(kdtree and projection indices for raw points over its corresponding sub_pc)
         convert_pc2ply(annotation_path, join(original_pc_folder, out_file_name))
