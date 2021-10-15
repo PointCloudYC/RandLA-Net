@@ -1,16 +1,18 @@
 from os.path import join
-from RandLANet import Network
-from SqnNet import SQNetwork
+# from RandLANet import Network
+from SqnNet import SqnNet
 from tester_S3DIS import ModelTester
 from helper_ply import read_ply
 # S3DIS's configs
-from helper_tool import ConfigS3DIS as cfg
+from helper_tool import ConfigS3DIS_Sqn as cfg
 from helper_tool import DataProcessing as DP
 from helper_tool import Plot
 import tensorflow as tf
 import numpy as np
 import time, pickle, argparse, glob, os
 
+# for debugging
+# tf.executing_eagerly()
 
 class S3DIS_SQN:
     """S3DIS dataset class w/o inheriting any TensorFlow built-in classes
@@ -215,26 +217,35 @@ class S3DIS_SQN:
         """
         def tf_map(batch_xyz, batch_features, batch_labels, batch_weak_label_mask, batch_pc_idx, batch_cloud_idx):
             batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
-            input_points = []
+            input_points = [] # (B,N,3), (B,N/4,3), (B,N/16,3), (B,N/64,3), (B,N/256,3)
             input_neighbors = []
             input_pools = []
             input_up_samples = []
 
+
+            batch_xyz_cur=batch_xyz
             for i in range(cfg.num_layers):
-                neighbour_idx = tf.py_func(DP.knn_search, [batch_xyz, batch_xyz, cfg.k_n], tf.int32) # (B,N,k)
-                sub_points = batch_xyz[:, :tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :] # retrieve first N/sub_sampling_ratio pts
-                pool_i = neighbour_idx[:, :tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :] # sub_sampled points' id
-                up_i = tf.py_func(DP.knn_search, [sub_points, batch_xyz, 1], tf.int32) # (B,N,K) over the sub_points
-                input_points.append(batch_xyz)
+                neighbour_idx = tf.py_func(DP.knn_search, [batch_xyz_cur, batch_xyz_cur, cfg.k_n], tf.int32) # (B,N,k)
+                sub_points = batch_xyz_cur[:, :tf.shape(batch_xyz_cur)[1] // cfg.sub_sampling_ratio[i], :] # retrieve first N/sub_sampling_ratio pts
+                pool_i = neighbour_idx[:, :tf.shape(batch_xyz_cur)[1] // cfg.sub_sampling_ratio[i], :] # sub_sampled points' id
+                up_i = tf.py_func(DP.knn_search, [sub_points, batch_xyz_cur, 1], tf.int32) # (B,N,K) over the sub_points
+                # input_points.append(batch_xyz)
+                # input_neighbors.append(neighbour_idx)
+                # input_pools.append(pool_i)
+                # input_up_samples.append(up_i)
+                # batch_xyz = sub_points
+                input_points.append(sub_points)
                 input_neighbors.append(neighbour_idx)
                 input_pools.append(pool_i)
                 input_up_samples.append(up_i)
-                batch_xyz = sub_points
+                batch_xyz_cur = sub_points
 
             input_list = input_points + input_neighbors + input_pools + input_up_samples
-            input_list += [batch_features, batch_labels, batch_weak_label_mask, batch_pc_idx, batch_cloud_idx]
+            # add batch_xyz for SQN, which is slightly different from RandLA-Net
+            # input_list += [batch_features, batch_labels, batch_weak_label_mask, batch_pc_idx, batch_cloud_idx]
+            input_list += [batch_xyz, batch_features, batch_labels, batch_weak_label_mask, batch_pc_idx, batch_cloud_idx]
 
-            return input_list # contains: [input_points, input_neighbors, input_pools, input_up_samples, batch_features, batch_labels, batch_pc_idx(i.e. points idx in the cloud),batch_cloud_idx], so 4*(cfg.num_layers+1) items in total; Note: for weakly semantic segmentation, add 1 more weak_label_mask
+            return input_list # contains: [input_points, input_neighbors, input_pools, input_up_samples, batch_features, batch_labels, batch_pc_idx(i.e. points idx in the cloud),batch_cloud_idx], so 4*(cfg.num_layers+1) items in total; Note: for weakly semantic segmentation, add 1 more weak_label_mask and batch_xyz
 
         return tf_map
 
@@ -289,3 +300,43 @@ if __name__ == '__main__':
     # create S3DIS dataset object for weakly semseg using test_area as validation/test set, the rest as training set-yc
     dataset = S3DIS_SQN(test_area, cfg)
     dataset.init_input_pipeline()
+
+    """provide 3 functionality: training, testing and visualization-yc
+    - training; pass the dataset object and dataset config to create the Network object, then start training
+    - testing; pass in the model checkpoint and create ModelTest object, then start testing
+    - visualization; plot the raw pc and sub_pc
+    """
+    if Mode == 'train':
+        # NOTE: cfg is S3DIS object w. common configs, a global variable here.
+        model = SqnNet(dataset, cfg) 
+        model.train(dataset)
+    elif Mode == 'test':
+        cfg.saving = False
+        model = SqnNet(dataset, cfg)
+        if FLAGS.model_path is not 'None':
+            chosen_snap = FLAGS.model_path
+        else:
+            chosen_snapshot = -1
+            logs = np.sort([os.path.join('results-Sqn', f) for f in os.listdir('results-Sqn') if f.startswith('Log')])
+            chosen_folder = logs[-1]
+            snap_path = join(chosen_folder, 'snapshots')
+            snap_steps = [int(f[:-5].split('-')[-1]) for f in os.listdir(snap_path) if f[-5:] == '.meta']
+            chosen_step = np.sort(snap_steps)[-1]
+            chosen_snap = os.path.join(snap_path, 'snap-{:d}'.format(chosen_step))
+        tester = ModelTester(model, dataset, restore_snap=chosen_snap)
+        tester.test(model, dataset)
+    else:
+        ##################
+        # Visualize data #
+        ##################
+
+        with tf.Session() as sess:
+            sess.run(tf.global_variables_initializer())
+            sess.run(dataset.train_init_op)
+            while True:
+                flat_inputs = sess.run(dataset.flat_inputs)
+                pc_xyz = flat_inputs[0]
+                sub_pc_xyz = flat_inputs[1]
+                labels = flat_inputs[21]
+                Plot.draw_pc_sem_ins(pc_xyz[0, :, :], labels[0, :])
+                Plot.draw_pc_sem_ins(sub_pc_xyz[0, :, :], labels[0, 0:np.shape(sub_pc_xyz)[1]])
