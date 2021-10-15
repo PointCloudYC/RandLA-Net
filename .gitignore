@@ -19,3 +19,8 @@ __pycache__/*
 # logs
 train_log/*
 log_*.txt
+
+# tf_ops
+tf_ops/*/*.so
+tf_ops/*/__pycache__/*
+tf_ops/*/*.py.bak

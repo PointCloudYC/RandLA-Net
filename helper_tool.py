@@ -40,7 +40,6 @@ class ConfigSemanticKITTI:
     saving = True
     saving_path = None
 
-
 class ConfigS3DIS:
     k_n = 16  # KNN
     num_layers = 5  # Number of layers
@@ -65,8 +64,37 @@ class ConfigS3DIS:
     saving = True
     saving_path = None
 
+# Faithfully follow the Sqn paper
+class ConfigS3DIS_Sqn:
+    k_n = 16  # KNN
+    num_layers = 4  # Number of layers
+    num_points = 40960  # Number of input points
+    num_classes = 13  # Number of valid classes
+    sub_grid_size = 0.04  # preprocess_parameter
+
+    batch_size = 2  # batch_size during training
+    val_batch_size = 20  # batch_size during validation and test
+    train_steps = 500  # Number of steps per epochs
+    val_steps = 100  # Number of validation steps per epoch
+
+    sub_sampling_ratio = [4, 4, 4, 4]  # sampling ratio of random sampling at each layer
+    d_out = [16, 64, 128, 256]  # feature dimension
+
+    noise_init = 3.5  # noise initial parameter
+    max_epoch = 100  # maximum epoch during training
+    learning_rate = 1e-2  # initial learning rate
+    lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
+
+    train_sum_dir = 'train_log'
+    saving = True
+    saving_path = None
+
     # weakly semantic segmentation
     weak_label_ratio = 0.01 # 0.1, etc
+    # the number of neighbors for interpolating feature for the query network
+    k_interpolation = 3
+    # how to concat point query features, default '1234' denoting concating 1-4th point query features, other options are: '123', etc.
+    concat_way = '1234'
 
 
 class ConfigSemantic3D:
