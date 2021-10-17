@@ -42,6 +42,8 @@ class SqnNet:
     - evaluate(): evaluate on the val/test set.
     """
     def __init__(self, dataset, config):
+
+        # obtain the dataset iterator's next element
         flat_inputs = dataset.flat_inputs
         self.config = config
         # Path of the result folder
@@ -64,14 +66,15 @@ class SqnNet:
             self.inputs['neigh_idx'] = flat_inputs[num_layers: 2 * num_layers] # neighbour id, containing num_layers items
             self.inputs['sub_idx'] = flat_inputs[2 * num_layers:3 * num_layers] # sub_sampled idx, containing num_layers items
             self.inputs['interp_idx'] = flat_inputs[3 * num_layers:4 * num_layers] # interpolation idx (nearest idx in the sub_pc for all raw pts), containing num_layers items
-            self.inputs['features'] = flat_inputs[4 * num_layers+1] # features containing xyz and feature, (B,N,3+C)
+            self.inputs['features'] = flat_inputs[4 * num_layers + 1] # features containing xyz and feature, (B,N,3+C)
             self.inputs['labels'] = flat_inputs[4 * num_layers + 2]
             self.inputs['weak_label_masks'] = flat_inputs[4 * num_layers + 3]
             self.inputs['input_inds'] = flat_inputs[4 * num_layers + 4] # input_inds for each batch 's point in the sub_pc
             self.inputs['cloud_inds'] = flat_inputs[4 * num_layers + 5] # cloud_inds for each batch
 
-            self.labels = self.inputs['labels']
-            self.weak_label_masks = self.inputs['weak_label_masks'] # weak label mask for weakly semseg
+            self.points = self.inputs['original_xyz'] # (B,N,3)
+            self.labels = self.inputs['labels'] # (B,N)
+            self.weak_label_masks = self.inputs['weak_label_masks'] # weak label mask for weakly semseg, (B,N)
             self.is_training = tf.placeholder(tf.bool, shape=())
             self.training_step = 1
             self.training_epoch = 0
@@ -82,7 +85,7 @@ class SqnNet:
             self.Log_file = open('log_train_' + dataset.name + str(dataset.val_split) + '.txt', 'a')
 
         with tf.variable_scope('layers'):
-            self.logits, self.weak_labels = self.inference(self.inputs, self.is_training) # (n, num_classes)
+            self.logits, self.weak_labels = self.inference(self.inputs, self.is_training) # (n, num_classes), (n,)
 
         #####################################################################
         # Ignore the invalid point (unlabeled) when calculating the loss #
@@ -110,6 +113,7 @@ class SqnNet:
                 # reducing_list = tf.concat([reducing_list[:ign_label], inserted_value, reducing_list[ign_label:]], 0)
             # valid_labels = tf.gather(reducing_list, valid_labels_init)
 
+            # TODO: use WCE, CE or smooth label
             self.loss = self.get_loss_sqn(self.logits, self.weak_labels, self.class_weights)
 
         with tf.variable_scope('optimizer'):
@@ -170,27 +174,36 @@ class SqnNet:
 
         # ###########################Query Network############################
         # query features for weakly points for all stages
-        # obtain weakly points for a batch using weak_label_masks
-        selected_idx = (self.weak_label_masks==1) # (B, N)
-        weakly_points = inputs['original_xyz'][selected_idx,:] # (n,3), each batch might have different number of weak points
-        weakly_points_labels=self.labels[selected_idx,:] # (n,)
+        # obtain weakly points and labels for a batch using weak_label_masks
+        # BUG: can not select the masked points ,ending up with (n=all points=40960， 3)-> resulting in OOM when performing interplolation. Avoid using this.
+        # weakly_points = points[weak_label_masks==1,:] # (n,3), each batch might have different number of weak points
+        # weakly_points_labels=labels[weak_label_masks==1,:] # (n,)
+        # method1 using boolean_mask
+        weak_points = tf.boolean_mask(self.points,tf.cast(self.weak_label_masks,tf.bool)) # (n,3), e.g., one batch has 26 weak pts
+        weakly_points_labels = tf.boolean_mask(self.labels,tf.cast(self.weak_label_masks,tf.bool)) # (n,)
+        # method2 using the gather_nd
+        # selected_idx = tf.where(tf.equal(self.weak_label_masks,1))
+        # weakly_points = tf.gather_nd(self.points, selected_idx)
+        # weakly_points_labels=tf.gather_nd(self.labels, selected_idx)# (n,)
 
-        # obtain batch indices to denote which batch is for each weakly point
-        row_indices = tf.reshape(tf.range(1,tf.shape(self.weak_label_masks)[0]+1),[tf.shape(self.weak_label_masks)[0],-1])
-        weak_mask_indices = (row_indices * self.weak_label_masks)
-        batch_inds = weak_mask_indices[weak_mask_indices!=0,:] - 1 # minus 1 due to index start zero
+        # obtain batch indices to denote which batch is for every weakly point
+        row_indices = tf.reshape(tf.range(1,tf.shape(self.weak_label_masks)[0]+1),[tf.shape(self.weak_label_masks)[0],-1]) # (B,) from 1 to B
+        weak_mask_indices = row_indices * self.weak_label_masks # element-wise *, (B,) * (B,N) -> (B,N)
+        batch_inds = weak_mask_indices[weak_mask_indices!=0,:] - 1 # (n,) batch indices for each weak pt, minus 1 due to index start zero
 
         # query 
         f_query_feature_list = []
         for i in range(self.config.num_layers):
             # feature1 = self.query1(weakly_points, end_points['res1_xyz'],batch_inds, unknow_feats=None, known_feats=end_points['res1_features']) # (n,C1,1)
-            xyz_current = inputs['xyz'][i+1] # (B,N/4,3)
+            xyz_current = inputs['xyz'][i+1] # (B,N/4,3), index i plus 1 because the first element is the point_original
             features_current = f_encoder_list[i+1] # (B,N/4,1,32), index plus 1 because the first one is the input of encoder
-            f_query_feature_i = self.three_nearest_interpolation(weakly_points, xyz_current, features_current, batch_inds)
+
+            # KEY: interpolate point features for each weak point
+            f_query_feature_i = self.three_nearest_interpolation(weak_points, xyz_current, tf.squeeze(features_current,axis=2), batch_inds) # (n,1,32) or (n,1,64), ...
             f_query_feature_list.append(f_query_feature_i)
 
         # concat all features, (n, 1116, 1); the tricky here is n is as batch dim, 1116 as channel dim, 1 as num_pt dim
-        features_combined = tf.concat(f_query_feature_list, axis=-1) # (B,1,928)
+        features_combined = tf.concat(f_query_feature_list, axis=-1) # (n,1,928)
 
         # obtain classification scores using FCs, (n, 1, 256)-> ...-->(n, 1, num_classes)
         FC_LIST =[256, 128, 64, self.config.num_classes]
@@ -207,19 +220,23 @@ class SqnNet:
 
     def train(self, dataset):
         log_out('****EPOCH {}****'.format(self.training_epoch), self.Log_file)
-        self.sess.run(dataset.train_init_op)
+        # use session to start the dataset iterator
+        self.sess.run(dataset.train_init_op) # similar to sess.run(dataset.flat_inputs)??
         while self.training_epoch < self.config.max_epoch:
             t_start = time.time()
             try:
-                ops = [self.train_op,
+                ops = [self.train_op, # training optmizer
                        self.extra_update_ops,
-                       self.merged,
+                       self.merged, # tensorboard summary
                        self.loss,
                        self.logits,
                        self.labels,
                        self.weak_label_masks,
                        self.weak_labels,
                        self.accuracy]
+
+                logits, weak_labels = self.sess.run([self.logits, self.weak_labels], {self.is_training: True})
+
                 # BUG: OOM issue reporting error OOM when allocating tensor with shape[40960,10240,32] for queired features concatenation step for the semantic query network(~line 450)  
                 _, _, summary, l_out, probs, labels, weak_label_masks, weak_labels, acc = self.sess.run(ops, {self.is_training: True})
                 self.train_writer.add_summary(summary, self.training_step)
@@ -421,14 +438,14 @@ class SqnNet:
         return pool_features
 
     @staticmethod
-    def three_nearest_interpolation(weakly_points, points_current, features_current, batch_inds, k_interpolation=3):
+    def three_nearest_interpolation(weakly_points, xyz_support, features_support, batch_inds, k_interpolation=3):
         """need custom CUDA ops to support (three_nn(), three_interpolate())
         ----------
-        weakly_points : torch.Tensor
+        weak_points : torch.Tensor
             (n, 3) tensor of the xyz positions of the unknown points
-        xyz_current : torch.Tensor
+        xyz_support : torch.Tensor
             (B, m, 3) tensor of the xyz positions of the known points (i.e. B PC examples, each is mx3 shape)
-        features_current : torch.Tensor
+        features_support : torch.Tensor
             (B, C2, m) tensor of features to be propagated (i.e. B PC examples, each is mx3 shape)
         batch_inds: torch.Tensor
             (B,) tensor of the batch indices to denote which batch for the weakly_points, values are 0 to B-1
@@ -442,30 +459,25 @@ class SqnNet:
         """
 
         # HACK: query features for each weak pt，here treat unknow（n,3) tensor as n sets(i.e., n batches where each batch has 1 pt) such that the MaskedUpSampled code can be used.
-        weakly_points = tf.reshape(weakly_points,(tf.shape(weakly_points)[0],1,-1)) # (n,1,3)
-        # known should be (n, m, 3)
+        xyz_query = tf.reshape(weakly_points,(tf.shape(weakly_points)[0],1,-1)) # (n,1,3)
         # points_current = points_current[batch_inds,...]  # BUG: CUDA error: an illegal memory access was encountered when use a tensor
-        points_current = tf.gather(points_current,batch_inds,axis=0) # BUG:
-        # known_feats should be (n, C2, m)
+        xyz_support = tf.gather(xyz_support, batch_inds, axis=0) # (B,m,3) --> (n,m,3) as each weak point might come from different batch
         # features_current = features_current[batch_inds,...] 
-        features_current = tf.gather(tf.squeeze(features_current,axis=2),batch_inds,axis=0)
+        features_support = tf.gather(features_support, batch_inds,axis=0) # (B,m,C) --> (n, m,C)
 
-        if points_current is not None:
-            dist, idx = three_nn(weakly_points, points_current)
-            dist_recip = 1.0 / (dist + 1e-8) 
-            norm = tf.reduce_sum(dist_recip, axis=2, keepdims=True)
-            weight = dist_recip / norm
+        if xyz_support is not None:
+            # query nearest 3 neighbors for each weak point
+            dist, idx = three_nn(xyz_query, xyz_support) # (n,1,3), (n,1,3)
+            dist_recip = 1.0 / (dist + 1e-8) # (n,1,3)
+            norm = tf.reduce_sum(dist_recip, axis=2, keepdims=True) # (n,1,1)
+            weight = dist_recip / norm # (n,1,3)
 
             # BUG: on the server, the tensor become weird when validating (but works when training). --> ilegal memory issue.
-            interpolated_feats = three_interpolate(
-                features_current, idx, weight
-            )
+            interpolated_feats = three_interpolate(features_support, idx, weight) # (n,1,C)
         else:
             raise ValueError('make sure the known parameters are valid')
 
-        new_features = interpolated_feats # (n,C2,1)
-
-        return new_features
+        return interpolated_feats # (n,1,C)
 
 
     @staticmethod
