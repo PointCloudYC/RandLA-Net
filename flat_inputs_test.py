@@ -72,10 +72,17 @@ if __name__ == '__main__':
         # weakly_points_labels=labels[weak_label_masks==1,:] # (n,)
         # method1 using boolean_mask
         weak_points1 = tf.boolean_mask(points,tf.cast(weak_label_masks,tf.bool))
-
         # method2 using the gather_nd
         selected_idx = tf.where(tf.equal(weak_label_masks,1)) # (n,2)
         weak_points2 = tf.gather_nd(points, selected_idx)
+
+        # obtain batch indices to denote which batch is for every weakly point
+        batch_inds1 = selected_idx[:,0]
+        row_indices = tf.reshape(tf.range(1,tf.shape(weak_label_masks)[0]+1),[tf.shape(weak_label_masks)[0],-1]) # (B,) from 1 to B
+        weak_mask_indices = row_indices * weak_label_masks # element-wise *, (B,) * (B,N) -> (B,N)
+        # BUG: can not retrieve batch indices correctly, but return all batches
+        batch_inds2 = weak_mask_indices[weak_mask_indices!=0,:] - 1 # (n,) batch indices for each weak pt, minus 1 due to index start zero
+
 
         is_training = tf.placeholder(tf.bool, shape=())
         training_step = 1
@@ -98,7 +105,7 @@ if __name__ == '__main__':
         while True:
             try:
                 # BUG: the ouput should use different names, or it will result in an error like has invalid type <class 'numpy.ndarray'>, must be a string or Tensor.
-                flat_inputs, weak_point1, weak_point2, idx= sess.run([dataset.flat_inputs, weak_points1, weak_points2, selected_idx])
+                flat_inputs, weak_point1, weak_point2, idx, inds1, inds2= sess.run([dataset.flat_inputs, weak_points1, weak_points2, selected_idx, batch_inds1, batch_inds2])
                 # print(flat_inputs) 
                 # print(weak_points, idx)
                 print(weak_point1.shape, weak_point2.shape)

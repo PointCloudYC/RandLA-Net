@@ -24,3 +24,6 @@ log_*.txt
 tf_ops/*/*.so
 tf_ops/*/__pycache__/*
 tf_ops/*/*.py.bak
+
+# checkpoints
+results-Sqn/*/snapshots/*

@@ -1,29 +1,19 @@
+import numpy as np
+import time, pickle, argparse, glob, os, random
 from os.path import join
-
-from tensorflow.python.ops.gen_array_ops import ones_like
-# from RandLANet import Network
 from SqnNet import SqnNet
 from tester_S3DIS_Sqn import ModelTester
 from helper_ply import read_ply
-# S3DIS's configs
+# S3DIS for Sqn config
 from helper_tool import ConfigS3DIS_Sqn as cfg
 from helper_tool import DataProcessing as DP
 from helper_tool import Plot
-
 import tensorflow as tf
-"""
-open eager execution for debugging; need next to the 'import tensorflow ...' line, otherwise possibly report ValueError: tf.enable_eager_execution must be called at program startup
-COMMENT THIS LINE WHEN TRAINING/EVALUATING
-"""
 # tf.enable_eager_execution()
 
-import numpy as np
-import time, pickle, argparse, glob, os
-
-
 class S3DIS_SQN:
-    """S3DIS dataset class w/o inheriting any TensorFlow built-in classes
-    Despite not inheriting any TensorFlow built-in classes, this class follow the tensorflow's dataset pattern: input pipeline w. iterator and initilizer
+    """S3DIS dataset class tailored for Sqn model (w/o inheriting any TensorFlow built-in classes)
+    Despite not inheriting any TensorFlow built-in classes, this declaration follow the tensorflow's dataset pattern: data pipeline w. iterator and initilizer
     - __int__(): initialize the dataset basic settings, e.g., dataset path, test_area_idx=5, classes, categories, and physical file paths, etc.Then it will call load_sub_sampled_clouds().
     - load_sub_sampled_clouds(): load S3DIS dataset physical sub-sampled files as training and test clouds; (note: these sub-sub-sampled files are prepared by the data_prepare_s3dis.py)
     - init_input_pipeline(): create tensorflow built-in dataset object using the `from_generator` method, then create its iterator and train,val_init_op operator for session running.
@@ -74,8 +64,7 @@ class S3DIS_SQN:
         self.load_sub_sampled_clouds(cfg.sub_grid_size)
 
     def load_sub_sampled_clouds(self, sub_grid_size):
-        """load sub_sampled physical files and fill all the containers, input_{trees, colors, labels, names} and val_{proj,labels}-yc
-
+        """load sub_sampled physical files and fill all the containers, input_{trees, colors, labels, names} and val_{proj,labels} and weak label_masks-yc
         Args:
             sub_grid_size ([type]): sub-sampling grid size, e.g., 0.040
         """
@@ -100,12 +89,10 @@ class S3DIS_SQN:
             weak_label_folder = join(self.path, 'weak_label_{}'.format(self.weak_label_ratio))
             weak_label_sub_file = join(weak_label_folder, file_path.split('/')[-1][:-4] + '_sub_weak_label.ply')
             if os.path.exists(weak_label_sub_file):
-
                 weak_data = read_ply(weak_label_sub_file) # ply format: x,y,z,red,gree,blue,class
                 weak_label_sub_mask = weak_data['weak_mask'] # (N',) to align same shape as sub_labels 
             else:
                 raise NotImplementedError("run the dataset_prepare_s3dis_sqn.py to generate weak labels for raw and sub PC")
-
 
             # Read pkl with search tree
             with open(kd_tree_file, 'rb') as f:
@@ -115,8 +102,7 @@ class S3DIS_SQN:
             self.input_trees[cloud_split] += [search_tree]
             self.input_colors[cloud_split] += [sub_colors]
             self.input_labels[cloud_split] += [sub_labels]
-
-            # HACK: for validation set, all points should have labels meaning the weak_label_ratio is 1
+            # HACK: for validation set, all points should have labels meaning the weak_label_ratio is 1(i.e., all points have labels)
             if cloud_split == 'validation':
                 self.input_weak_labels[cloud_split] += [np.ones_like(weak_label_sub_mask)]
             else:
@@ -141,8 +127,10 @@ class S3DIS_SQN:
                 self.val_labels += [labels]
                 print('{:s} done in {:.1f}s'.format(cloud_name, time.time() - t0))
 
-    # Generate the input data flow
-    # Intuitively, it prepare data training examples, each pc will generate numerous point cloud training/validation examples by selecting a center point in the pc evenly, then select center point's neighboring points within a radius but not more than a threshold (e.g.,10000)-yc
+    """
+    Generate the input data flow
+    Intuitively, it prepare data training examples, each pc will generate numerous point cloud training/validation examples by selecting a center point in the pc evenly, then select center point's neighboring points within a radius but not more than a threshold (e.g.,10000)-yc
+    """
     def get_batch_gen(self, split):
         if split == 'training':
             num_per_epoch = cfg.train_steps * cfg.batch_size
@@ -289,6 +277,7 @@ class S3DIS_SQN:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument("--rng_seed", type=int, default=123, help='manual seed')
     parser.add_argument('--gpu', type=int, default=0, help='the number of GPUs to use [default: 0]')
     parser.add_argument('--test_area', type=int, default=5, help='Which area to use for test, option: 1-6 [default: 5]')
     parser.add_argument('--mode', type=str, default='train', help='options: train, test, vis')
@@ -296,6 +285,11 @@ if __name__ == '__main__':
     parser.add_argument('--sub_grid_size', type=float, default=0.04, help='grid-sampling size')
     parser.add_argument('--weak_label_ratio', type=float, default=0.01, help='the weakly semantic segmentation ratio')
     FLAGS = parser.parse_args()
+
+    # set fixed seeds for reproducible results
+    random.seed(FLAGS.rng_seed)
+    np.random.seed(FLAGS.rng_seed)
+    tf.random.set_seed(FLAGS.rng_seed)
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ['CUDA_VISIBLE_DEVICES'] = str(FLAGS.gpu)
@@ -327,7 +321,7 @@ if __name__ == '__main__':
             chosen_snap = FLAGS.model_path
         else:
             chosen_snapshot = -1
-            logs = np.sort([os.path.join('results-Sqn', f) for f in os.listdir('results-Sqn') if f.startswith('Log')])
+            logs = np.sort([os.path.join(cfg.results_dir, f) for f in os.listdir(cfg.results_dir) if f.startswith('Log')])
             chosen_folder = logs[-1]
             snap_path = join(chosen_folder, 'snapshots')
             snap_steps = [int(f[:-5].split('-')[-1]) for f in os.listdir(snap_path) if f[-5:] == '.meta']

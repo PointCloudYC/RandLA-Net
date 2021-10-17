@@ -73,7 +73,8 @@ class ConfigS3DIS_Sqn:
     sub_grid_size = 0.04  # preprocess_parameter
 
     batch_size = 2  # batch_size during training
-    val_batch_size = 20  # batch_size during validation and test
+    # val_batch_size = 20  # batch_size during validation and test for the RandLA-Net
+    val_batch_size = 2 # change to a very sm number, 1 or 2, as the SQN need lg memory for three_nearest_interpolation()
     train_steps = 500  # Number of steps per epochs
     val_steps = 100  # Number of validation steps per epoch
 
@@ -85,9 +86,10 @@ class ConfigS3DIS_Sqn:
     learning_rate = 1e-2  # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
-    train_sum_dir = 'train_log'
+    train_sum_dir = 'train_log_Sqn'
     saving = True
     saving_path = None
+    results_dir = 'results_Sqn'
 
     # weakly semantic segmentation
     weak_label_ratio = 0.01 # 0.1, etc
