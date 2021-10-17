@@ -199,14 +199,14 @@ class DataProcessing:
 
     @staticmethod
     def data_aug(xyz, color, labels, idx, num_out):
-        """add padded points-yc
+        """add padded points for points less than desired number-yc
 
         Args:
-            xyz ([type]): [description]
-            color ([type]): [description]
-            labels ([type]): [description]
-            idx ([type]): [description]
-            num_out ([type]): [description]
+            xyz ([type]): [description] (N', 3)
+            color ([type]): [description] (N', 3)
+            labels ([type]): [description] (N',)
+            idx ([type]): [description] (N',)
+            num_out ([type]): [description] scalar, desired number of points
 
         Returns:
             [type]: [description]
@@ -214,13 +214,39 @@ class DataProcessing:
         num_in = len(xyz)
         dup = np.random.choice(num_in, num_out - num_in)
         xyz_dup = xyz[dup, ...]
-        xyz_aug = np.concatenate([xyz, xyz_dup], 0)
+        xyz_aug = np.concatenate([xyz, xyz_dup], 0) #
         color_dup = color[dup, ...]
         color_aug = np.concatenate([color, color_dup], 0)
         idx_dup = list(range(num_in)) + list(dup)
         idx_aug = idx[idx_dup]
         label_aug = labels[idx_dup]
         return xyz_aug, color_aug, idx_aug, label_aug
+
+    @staticmethod
+    def data_aug_Sqn(xyz, color, labels, masks, idx, num_out):
+        """add padded points for points less than desired number-yc
+
+        Args:
+            xyz ([type]): [description] (N', 3)
+            color ([type]): [description] (N', 3)
+            labels ([type]): [description] (N',)
+            idx ([type]): [description] (N',)
+            num_out ([type]): [description] scalar, desired number of points
+
+        Returns:
+            [type]: [description]
+        """
+        num_in = len(xyz)
+        dup = np.random.choice(num_in, num_out - num_in)
+        xyz_dup = xyz[dup, ...]
+        xyz_aug = np.concatenate([xyz, xyz_dup], 0) #
+        color_dup = color[dup, ...]
+        color_aug = np.concatenate([color, color_dup], 0)
+        idx_dup = list(range(num_in)) + list(dup)
+        idx_aug = idx[idx_dup]
+        label_aug = labels[idx_dup]
+        mask_aug = masks[idx_dup]
+        return xyz_aug, color_aug, idx_aug, label_aug, mask_aug
 
     @staticmethod
     def shuffle_idx(x):
@@ -289,7 +315,8 @@ class DataProcessing:
     def get_class_weights(dataset_name):
         # pre-calculate the number of points in each category
         num_per_class = []
-        if dataset_name is 'S3DIS':
+        # S3DIS semseg model or Sqn model(weakly semseg)
+        if 'S3DIS' in dataset_name:
             num_per_class = np.array([3370714, 2856755, 4919229, 318158, 375640, 478001, 974733,
                                       650464, 791496, 88727, 1284130, 229758, 2272837], dtype=np.int32)
         elif dataset_name is 'Semantic3D':

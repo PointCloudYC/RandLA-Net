@@ -72,9 +72,9 @@ class Network:
             self.labels = tf.reshape(self.labels, [-1])
 
             # Boolean mask of points that should be ignored
-            ignored_bool = tf.zeros_like(self.labels, dtype=tf.bool)
-            for ign_label in self.config.ignored_label_inds:
-                ignored_bool = tf.logical_or(ignored_bool, tf.equal(self.labels, ign_label))
+            ignored_bool = tf.zeros_like(self.labels, dtype=tf.bool) # (B,N)
+            for ign_label in self.config.ignored_label_inds: # e.g., ignore 12, [12]
+                ignored_bool = tf.logical_or(ignored_bool, tf.equal(self.labels, ign_label)) # bool tensor, (B,N)
 
             # Collect logits and labels that are not ignored
             valid_idx = tf.squeeze(tf.where(tf.logical_not(ignored_bool)))

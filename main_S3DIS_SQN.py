@@ -1,18 +1,25 @@
 from os.path import join
+
+from tensorflow.python.ops.gen_array_ops import ones_like
 # from RandLANet import Network
 from SqnNet import SqnNet
-from tester_S3DIS import ModelTester
+from tester_S3DIS_Sqn import ModelTester
 from helper_ply import read_ply
 # S3DIS's configs
 from helper_tool import ConfigS3DIS_Sqn as cfg
 from helper_tool import DataProcessing as DP
 from helper_tool import Plot
+
 import tensorflow as tf
+"""
+open eager execution for debugging; need next to the 'import tensorflow ...' line, otherwise possibly report ValueError: tf.enable_eager_execution must be called at program startup
+COMMENT THIS LINE WHEN TRAINING/EVALUATING
+"""
+# tf.enable_eager_execution()
+
 import numpy as np
 import time, pickle, argparse, glob, os
 
-# for debugging
-# tf.executing_eagerly()
 
 class S3DIS_SQN:
     """S3DIS dataset class w/o inheriting any TensorFlow built-in classes
@@ -24,7 +31,7 @@ class S3DIS_SQN:
     - get_tf_mapping2(): use for the above init_input_pipeline() to organize each stage's points,neighbors,pools and up_samples into a list.
     """
     def __init__(self, test_area_idx, cfg):
-        self.name = 'S3DIS'
+        self.name = 'S3DIS_SQN'
         # self.path = '/data/S3DIS'
         self.path = 'data/S3DIS'
         self.label_to_names = {0: 'ceiling',
@@ -93,6 +100,7 @@ class S3DIS_SQN:
             weak_label_folder = join(self.path, 'weak_label_{}'.format(self.weak_label_ratio))
             weak_label_sub_file = join(weak_label_folder, file_path.split('/')[-1][:-4] + '_sub_weak_label.ply')
             if os.path.exists(weak_label_sub_file):
+
                 weak_data = read_ply(weak_label_sub_file) # ply format: x,y,z,red,gree,blue,class
                 weak_label_sub_mask = weak_data['weak_mask'] # (N',) to align same shape as sub_labels 
             else:
@@ -107,7 +115,12 @@ class S3DIS_SQN:
             self.input_trees[cloud_split] += [search_tree]
             self.input_colors[cloud_split] += [sub_colors]
             self.input_labels[cloud_split] += [sub_labels]
-            self.input_weak_labels[cloud_split] += [weak_label_sub_mask]
+
+            # HACK: for validation set, all points should have labels meaning the weak_label_ratio is 1
+            if cloud_split == 'validation':
+                self.input_weak_labels[cloud_split] += [np.ones_like(weak_label_sub_mask)]
+            else:
+                self.input_weak_labels[cloud_split] += [weak_label_sub_mask]
 
             size = sub_colors.shape[0] * 4 * 7
             print('{:s} {:.1f} MB loaded in {:.1f}s'.format(kd_tree_file.split('/')[-1], size * 1e-6, time.time() - t0))
@@ -188,12 +201,9 @@ class S3DIS_SQN:
 
                 # up_sampled with replacement
                 if len(points) < cfg.num_points:
-                    queried_pc_xyz, queried_pc_colors, queried_idx, queried_pc_labels = \
-                        DP.data_aug(queried_pc_xyz, queried_pc_colors, queried_pc_labels, queried_idx, cfg.num_points)
-                    # HACK: reuse the data_aug() to generate the weak label mask
-                    _, _, _, queried_pc_weak_label_mask = \
-                        DP.data_aug(queried_pc_xyz, queried_pc_colors, queried_pc_weak_label_mask, queried_idx, cfg.num_points)
-
+                    queried_pc_xyz, queried_pc_colors, queried_idx, queried_pc_labels, queried_pc_weak_label_mask = \
+                        DP.data_aug_Sqn(queried_pc_xyz, queried_pc_colors, queried_pc_labels, 
+                                        queried_pc_weak_label_mask, queried_idx, cfg.num_points)
                 if True:
                     yield (queried_pc_xyz.astype(np.float32),
                            queried_pc_colors.astype(np.float32),
@@ -251,7 +261,7 @@ class S3DIS_SQN:
 
     def init_input_pipeline(self):
         """
-        obtain X,Y pair and {train,val}_init_op operator following tensorflow pipline pattern.
+        obtain X,Y pair for training/validation and {train,val}_init_op operator following tensorflow pipline pattern.
         """
         print('Initiating input pipelines')
         cfg.ignored_label_inds = [self.label_to_idx[ign_label] for ign_label in self.ignored_labels]
@@ -323,6 +333,7 @@ if __name__ == '__main__':
             snap_steps = [int(f[:-5].split('-')[-1]) for f in os.listdir(snap_path) if f[-5:] == '.meta']
             chosen_step = np.sort(snap_steps)[-1]
             chosen_snap = os.path.join(snap_path, 'snap-{:d}'.format(chosen_step))
+        # TODO:
         tester = ModelTester(model, dataset, restore_snap=chosen_snap)
         tester.test(model, dataset)
     else:
@@ -332,11 +343,15 @@ if __name__ == '__main__':
 
         with tf.Session() as sess:
             sess.run(tf.global_variables_initializer())
+            # use session to start the dataset iterator
             sess.run(dataset.train_init_op)
             while True:
+                
+                # obtain the iterator's next element
                 flat_inputs = sess.run(dataset.flat_inputs)
-                pc_xyz = flat_inputs[0]
-                sub_pc_xyz = flat_inputs[1]
-                labels = flat_inputs[21]
-                Plot.draw_pc_sem_ins(pc_xyz[0, :, :], labels[0, :])
-                Plot.draw_pc_sem_ins(sub_pc_xyz[0, :, :], labels[0, 0:np.shape(sub_pc_xyz)[1]])
+                
+                pc_xyz = flat_inputs[4 * cfg.num_layers] # original xyz
+                sub_pc_xyz = flat_inputs[0] # sub_pc xyz for 1st stage
+                labels = flat_inputs[4 * cfg.num_layers + 2] # sub_pc labels
+                Plot.draw_pc_sem_ins(pc_xyz[0, :, :], labels[0, :]) # only draw 1st batch's raw PC 
+                Plot.draw_pc_sem_ins(sub_pc_xyz[0, :, :], labels[0, 0:np.shape(sub_pc_xyz)[1]]) # draw 1st batch's sub PC
