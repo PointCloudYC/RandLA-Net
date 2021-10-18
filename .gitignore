@@ -27,3 +27,6 @@ tf_ops/*/*.py.bak
 
 # checkpoints
 results-Sqn/*/snapshots/*
+results_Sqn/Log_*/snapshots/*
+
+train_log_Sqn/*

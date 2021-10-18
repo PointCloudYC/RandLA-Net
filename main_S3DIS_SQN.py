@@ -289,7 +289,8 @@ if __name__ == '__main__':
     # set fixed seeds for reproducible results
     random.seed(FLAGS.rng_seed)
     np.random.seed(FLAGS.rng_seed)
-    tf.random.set_seed(FLAGS.rng_seed)
+    # tf.random.set_seed(FLAGS.rng_seed)
+    tf.random.set_random_seed(FLAGS.rng_seed)
 
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ['CUDA_VISIBLE_DEVICES'] = str(FLAGS.gpu)

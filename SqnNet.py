@@ -96,7 +96,7 @@ class SqnNet:
             self.logits = tf.reshape(self.logits, [-1, config.num_classes]) # (n, num_classes)
             self.weak_labels = tf.reshape(self.weak_labels, [-1]) # (n,)
             # TODO: which to use, WCE, CE or smooth label
-            self.loss = self.get_loss_Sqn(self.logits, self.weak_labels, self.class_weights)
+            self.loss = self.get_loss_Sqn(self.logits, self.weak_labels)
 
         with tf.variable_scope('optimizer'):
             self.learning_rate = tf.Variable(config.learning_rate, trainable=False, name='learning_rate')
@@ -328,26 +328,18 @@ class SqnNet:
         log_out('-' * len(s) + '\n', self.Log_file)
         return mean_iou
 
-    def get_loss_Sqn(self, logits, labels, pre_cal_weights):
+    def get_loss_Sqn(self, logits, labels):
         """weighted CE loss (same as the get_loss(), but with my shape comments)
         Args:
             logits ([type]): logits, shape like: (B,N,K)
             labels ([type]): labels, shape like: (B,N) where each value is in [0,1,...,K-1]
-            pre_cal_weights ([type]): class weight, a list
-            weak_label_masks: weak label masks, shape like (B,N,) each item either 1 or 0
-
         Returns:
             [type]: the loss
         """
-        # calculate the weighted cross entropy according to the inverse frequency
-        class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32) # (1,13)
         one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes) # (n,13)
-        weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1) # (n,)
-
-        unweighted_losses = tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=one_hot_labels)
-        weighted_losses = unweighted_losses * weights
-        output_loss = tf.reduce_mean(weighted_losses)
-        return output_loss
+        losses = tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=one_hot_labels)
+        loss_value = tf.reduce_mean(losses)
+        return loss_value
 
     def get_loss(self, logits, labels, pre_cal_weights):
         """weighted CE loss
