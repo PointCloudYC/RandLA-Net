@@ -111,6 +111,21 @@ pip3 install --upgrade cython
 
 # exploitation
 
+## replication records
+
+check log_train_S3DIS_SQNArea_5.txt
+
+- init version; weak_ratio = 0.01, wce loss, batch size =2, val_batch_size =1
+After training even 11 epochs, the loss still does not converge, the best mIoU 0.23% 
+
+- 2nd trial; weak_ratio = 0.1, 0.01, use ce loss, batch size =4, val_batch_size =1 (Almost occupy my whole GPU 7.9GB)
+  - weak_ratio = 0.1, converge very faster, epoch 2 start to work well --> 100 epochs 52.94% mIoU,
+  - weak_ratio = 0.01, converge very faster, epoch 2 start to work well --> 100 epochs 35.96% mIoU,
+
+- 3rd trial; weak_ratio = 0.001, use ce loss, batch size =~16, 10, 8, 6~, 4, val_batch_size =1
+  - weak_ratio = 0.001, converge very faster, epoch 2 start to work well --> 100 epochs  mIoU,
+  - weak_ratio = 0.01, converge very faster, epoch 2 start to work well --> 100 epochs  mIoU,
+
 ## replication problems
 ### borrow pointnet++'s tf_ops
 - check the code.

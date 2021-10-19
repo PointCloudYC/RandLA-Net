@@ -278,6 +278,10 @@ class S3DIS_SQN:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--rng_seed", type=int, default=123, help='manual seed')
+    parser.add_argument("--num_points", type=int, default=40960, help='the number of points for each PC example')
+    parser.add_argument("--batch_size", type=int, default=4, help='batch size for training')
+    parser.add_argument("--val_batch_size", type=int, default=1, help='batch size for validation')
+    parser.add_argument("--max_epoch", type=int, default=400, help='max epoch for training')
     parser.add_argument('--gpu', type=int, default=0, help='the number of GPUs to use [default: 0]')
     parser.add_argument('--test_area', type=int, default=5, help='Which area to use for test, option: 1-6 [default: 5]')
     parser.add_argument('--mode', type=str, default='train', help='options: train, test, vis')
@@ -300,6 +304,10 @@ if __name__ == '__main__':
     test_area = FLAGS.test_area
 
     # override the config with argparse's arguments
+    cfg.num_points=FLAGS.num_points
+    cfg.max_epoch=FLAGS.max_epoch
+    cfg.batch_size=FLAGS.batch_size
+    cfg.val_batch_size=FLAGS.val_batch_size
     cfg.sub_grid_size=FLAGS.sub_grid_size
     cfg.weak_label_ratio=FLAGS.weak_label_ratio
     # create S3DIS dataset object for weakly semseg using test_area as validation/test set, the rest as training set-yc
